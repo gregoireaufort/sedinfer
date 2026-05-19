@@ -48,7 +48,8 @@ def run_rw_metropolis(
         lp_prop = posterior.log_prob_fn(x_prop)
 
         if np.isfinite(lp_prop):
-            alpha = np.exp(lp_prop - current_lp)
+            log_alpha = lp_prop - current_lp
+            alpha = 1.0 if log_alpha >= 0.0 else np.exp(log_alpha)
         else:
             alpha = 0.0
 
@@ -91,6 +92,9 @@ def run_emcee(
     pool=None,
     burnin: int = 0,
     thin: int = 1,
+    rng: Optional[np.random.Generator] = None,
+    seed: Optional[int] = None,
+    progress: bool = True,
 ) -> SamplingResult:
     """
     Run emcee ensemble sampler given a Posterior.
@@ -98,10 +102,14 @@ def run_emcee(
     x0:
         Initial point (used to initialize all walkers in a small Gaussian ball).
     """
+    if rng is not None and seed is not None:
+        raise ValueError("Pass either rng or seed, not both.")
+    if rng is None:
+        rng = np.random.default_rng(seed)
     x0 = np.asarray(x0, dtype=float)
     assert x0.shape[0] == posterior.dim
 
-    pos = x0 + 1e-4 * np.random.randn(nwalkers, posterior.dim)
+    pos = x0 + 1e-4 * rng.normal(size=(nwalkers, posterior.dim))
 
     sampler = emcee.EnsembleSampler(
         nwalkers,
@@ -109,7 +117,17 @@ def run_emcee(
         posterior.log_prob_fn,
         pool=pool,
     )
-    sampler.run_mcmc(pos, nsteps, progress=True)
+    # emcee internally still uses NumPy's legacy global RandomState in common
+    # releases.  Seed it only inside this call and restore the caller's global
+    # state afterwards, so same-seed runs are reproducible without leaking
+    # stochastic state into the rest of a notebook.
+    emcee_seed = int(rng.integers(0, np.iinfo(np.uint32).max))
+    numpy_random_state = np.random.get_state()
+    try:
+        np.random.seed(emcee_seed)
+        sampler.run_mcmc(pos, nsteps, progress=progress)
+    finally:
+        np.random.set_state(numpy_random_state)
 
     chain = sampler.get_chain()
     logp_chain = sampler.get_log_prob()
@@ -130,5 +148,7 @@ def run_emcee(
             "raw_logp": logp_chain,
             "nwalkers": nwalkers,
             "nsteps": nsteps,
+            "seed": seed,
+            "emcee_seed": emcee_seed,
         },
     )

@@ -35,14 +35,28 @@ dev = [
 fsps = [
   "sedpy",
 ]
+cigale = [
+  "pcigale",
+]
 sbi = [
   "torch",
   "nflows",
 ]
+jaxcigale = [
+  "jax",
+  "jaxlib",
+  "dsps",
+  "numpyro",
+]
 all = [
   "sedpy",
+  "pcigale",
   "torch",
   "nflows",
+  "jax",
+  "jaxlib",
+  "dsps",
+  "numpyro",
   "matplotlib",
   "pytest",
 ]

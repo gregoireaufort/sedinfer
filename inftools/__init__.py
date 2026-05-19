@@ -14,6 +14,16 @@ __all__ = [
     "run_rw_metropolis",
     "run_tamis",
     "run_pocomc",
+    "DiscreteGrid",
+    "ParameterBlocks",
+    "conditional_continuous_posterior",
+    "enumerate_discrete_grid",
+    "full_theta_from_blocks",
+    "run_grid_sampler",
+    "run_mixed_gibbs",
+    "run_mixed_tamis",
+    "sample_discrete_grid",
+    "split_parameter_space",
     "plotting",
     "BoxLogitTransform",
     "MAFPosteriorEstimator",
@@ -39,6 +49,44 @@ def __getattr__(name):
         from .pocomc_adapter import run_pocomc
 
         return run_pocomc
+    if name in {
+        "DiscreteGrid",
+        "ParameterBlocks",
+        "conditional_continuous_posterior",
+        "enumerate_discrete_grid",
+        "full_theta_from_blocks",
+        "run_grid_sampler",
+        "run_mixed_gibbs",
+        "sample_discrete_grid",
+        "split_parameter_space",
+    }:
+        from .grid import (
+            DiscreteGrid,
+            ParameterBlocks,
+            conditional_continuous_posterior,
+            enumerate_discrete_grid,
+            full_theta_from_blocks,
+            run_grid_sampler,
+            run_mixed_gibbs,
+            sample_discrete_grid,
+            split_parameter_space,
+        )
+
+        return {
+            "DiscreteGrid": DiscreteGrid,
+            "ParameterBlocks": ParameterBlocks,
+            "conditional_continuous_posterior": conditional_continuous_posterior,
+            "enumerate_discrete_grid": enumerate_discrete_grid,
+            "full_theta_from_blocks": full_theta_from_blocks,
+            "run_grid_sampler": run_grid_sampler,
+            "run_mixed_gibbs": run_mixed_gibbs,
+            "sample_discrete_grid": sample_discrete_grid,
+            "split_parameter_space": split_parameter_space,
+        }[name]
+    if name == "run_mixed_tamis":
+        from .mixed_tamis import run_mixed_tamis
+
+        return run_mixed_tamis
     if name == "plotting":
         return importlib.import_module(".plotting", __name__)
     if name in {"MAFPosteriorEstimator", "simulate_training_set", "train_maf_posterior"}:

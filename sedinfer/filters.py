@@ -14,7 +14,7 @@ class FilterSet:
     def __post_init__(self) -> None:
         filters = tuple(self.filters)
         if self.names is None:
-            names = tuple(getattr(f, "name", str(i)) for i, f in enumerate(filters))
+            names = tuple(f if isinstance(f, str) else getattr(f, "name", str(i)) for i, f in enumerate(filters))
         else:
             names = tuple(str(name) for name in self.names)
         if len(names) != len(filters):

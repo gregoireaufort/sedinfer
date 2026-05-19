@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from sedinfer.backends.base import ModelPhotometry, SEDBackend
+from sedinfer.backends.base import ModelPhotometry, ModelSpectrum, SEDBackend
 from sedinfer.filters import FilterSet
 from sedinfer.transforms.sfh import normalize_sfh_to_formed_mass
 from sedinfer.units import LSUN_CGS, MassNormalization, PARSEC_CM
@@ -76,25 +76,9 @@ class FSPSBackend(SEDBackend):
     def predict_photometry(self, params: Mapping[str, Any], filters: FilterSet | Sequence[object]) -> ModelPhotometry:
         """Predict observed-frame filter photometry in maggies."""
 
-        params = dict(params)
-        z = self._get_redshift(params)
         filter_set = coerce_filter_set(filters)
-        t_gyr, sfr = self._get_tabular_sfh(params)
-        self._validate_tabular_sfh(t_gyr, sfr, z)
-
-        if self.mass_normalization == MassNormalization.PER_SOLAR_MASS:
-            sfr = normalize_sfh_to_formed_mass(t_gyr, sfr)
-
+        wave_obs_a, flam_obs, metadata = self._observed_spectrum_from_params(params)
         get_sed = _load_getsed()
-        sp = self._stellar_population()
-        sp.params["zred"] = z
-        for key in FSPS_PARAMETER_KEYS:
-            if key in params:
-                sp.params[key] = float(params[key])
-
-        sp.set_tabular_sfh(t_gyr, sfr)
-        wave_rest_a, llam_lsun_per_a = sp.get_spectrum(tage=float(t_gyr[-1]), peraa=True)
-        wave_obs_a, flam_obs = self._rest_spectrum_to_observed_flux(wave_rest_a, llam_lsun_per_a, z)
 
         mags = get_sed(wave_obs_a, flam_obs, list(filter_set.filters), linear_flux=False)
         flux_maggies = 10.0 ** (-0.4 * np.asarray(mags, dtype=float))
@@ -104,7 +88,63 @@ class FSPSBackend(SEDBackend):
             )
         if not np.all(np.isfinite(flux_maggies)):
             raise FloatingPointError("FSPS photometry contains non-finite values.")
-        return ModelPhotometry(band_names=filter_set.names, flux=flux_maggies)
+        return ModelPhotometry(band_names=filter_set.names, flux=flux_maggies, metadata=metadata)
+
+    def predict_spectrum(
+        self,
+        params: Mapping[str, Any],
+        wavelengths: Sequence[float] | None = None,
+        wavelength_range: tuple[float, float] | None = None,
+        resolution: float | None = None,
+    ) -> ModelSpectrum:
+        """Predict observed-frame ``f_lambda`` in cgs per Angstrom.
+
+        ``wavelengths`` and ``wavelength_range`` are observed-frame Angstrom.
+        Instrumental convolution is not implemented in this first pass, so
+        ``resolution`` must be omitted.
+        """
+
+        if resolution is not None:
+            raise NotImplementedError("FSPSBackend spectral resolution convolution is not implemented yet.")
+        wave_obs_a, flam_obs, metadata = self._observed_spectrum_from_params(params)
+        wave_out, flux_out = _sample_or_clip_spectrum(wave_obs_a, flam_obs, wavelengths, wavelength_range)
+        if not np.all(np.isfinite(flux_out)):
+            raise FloatingPointError("FSPS spectrum contains non-finite flux values after sampling.")
+        return ModelSpectrum(
+            wavelength=wave_out,
+            flux=flux_out,
+            wavelength_unit="angstrom",
+            flux_unit="erg/s/cm^2/angstrom",
+            metadata=metadata,
+        )
+
+    def _observed_spectrum_from_params(self, params: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+        params = dict(params)
+        z = self._get_redshift(params)
+        t_gyr, sfr = self._get_tabular_sfh(params)
+        self._validate_tabular_sfh(t_gyr, sfr, z)
+
+        if self.mass_normalization == MassNormalization.PER_SOLAR_MASS:
+            sfr = normalize_sfh_to_formed_mass(t_gyr, sfr)
+
+        sp = self._stellar_population()
+        sp.params["zred"] = z
+        for key in FSPS_PARAMETER_KEYS:
+            if key in params:
+                sp.params[key] = float(params[key])
+
+        sp.set_tabular_sfh(t_gyr, sfr)
+        wave_rest_a, llam_lsun_per_a = sp.get_spectrum(tage=float(t_gyr[-1]), peraa=True)
+        wave_obs_a, flam_obs = self._rest_spectrum_to_observed_flux(wave_rest_a, llam_lsun_per_a, z)
+        metadata = {
+            "backend": "fsps",
+            "redshift": z,
+            "wavelength_unit": "angstrom",
+            "flux_unit": "erg/s/cm^2/angstrom",
+            "spectrum_frame": "observed",
+            "mass_normalization": self.mass_normalization.value,
+        }
+        return wave_obs_a, flam_obs, metadata
 
     def _stellar_population(self):
         if self._sp is None:
@@ -222,3 +262,32 @@ def _module_available(name: str) -> bool:
     if module is not None:
         return True
     return importlib.util.find_spec(name) is not None
+
+
+def _sample_or_clip_spectrum(
+    wavelength: Sequence[float],
+    flux: Sequence[float],
+    requested_wavelengths: Sequence[float] | None,
+    wavelength_range: tuple[float, float] | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    wave = np.asarray(wavelength, dtype=float)
+    spec = np.asarray(flux, dtype=float)
+    if requested_wavelengths is not None:
+        out_wave = np.asarray(requested_wavelengths, dtype=float)
+        if out_wave.ndim != 1:
+            raise ValueError("Requested wavelengths must be one-dimensional.")
+        out_flux = np.interp(out_wave, wave, spec, left=np.nan, right=np.nan)
+    else:
+        out_wave = wave.copy()
+        out_flux = spec.copy()
+
+    if wavelength_range is not None:
+        lo, hi = wavelength_range
+        lo = float(lo)
+        hi = float(hi)
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            raise ValueError("wavelength_range must be a finite increasing (min, max) pair.")
+        keep = (out_wave >= lo) & (out_wave <= hi)
+        out_wave = out_wave[keep]
+        out_flux = out_flux[keep]
+    return out_wave, out_flux

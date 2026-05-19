@@ -113,6 +113,51 @@ def test_photometry_output_shape_matches_number_of_filters(monkeypatch):
     assert np.all(np.isfinite(phot.flux))
 
 
+def test_spectrum_output_matches_requested_wavelengths(monkeypatch):
+    import sedinfer.backends.fsps as fsps_backend
+
+    monkeypatch.setattr(fsps_backend, "_module_available", lambda name: True)
+    backend = FSPSBackend(mass_normalization=MassNormalization.ABSOLUTE, cosmology=FakeCosmology(age_gyr=20.0))
+    backend._sp = FakeStellarPopulation()
+    requested = np.array([1000.0, 1500.0, 2000.0])
+
+    spectrum = backend.predict_spectrum(
+        {
+            "z": 0.0,
+            "tabular_time_gyr": [0.0, 1.0, 2.0],
+            "tabular_sfr_msun_per_yr": [1.0, 1.0, 1.0],
+        },
+        wavelengths=requested,
+    )
+
+    assert spectrum.wavelength_unit == "angstrom"
+    assert spectrum.flux_unit == "erg/s/cm^2/angstrom"
+    assert np.allclose(spectrum.wavelength, requested)
+    assert spectrum.flux.shape == requested.shape
+    assert np.all(np.isfinite(spectrum.flux))
+
+
+def test_spectrum_wavelength_range_clips_native_grid(monkeypatch):
+    import sedinfer.backends.fsps as fsps_backend
+
+    monkeypatch.setattr(fsps_backend, "_module_available", lambda name: True)
+    backend = FSPSBackend(mass_normalization=MassNormalization.ABSOLUTE, cosmology=FakeCosmology(age_gyr=20.0))
+    backend._sp = FakeStellarPopulation()
+
+    spectrum = backend.predict_spectrum(
+        {
+            "z": 0.0,
+            "tabular_time_gyr": [0.0, 1.0, 2.0],
+            "tabular_sfr_msun_per_yr": [1.0, 1.0, 1.0],
+        },
+        wavelength_range=(1500.0, 2500.0),
+    )
+
+    assert np.all(spectrum.wavelength >= 1500.0)
+    assert np.all(spectrum.wavelength <= 2500.0)
+    assert spectrum.wavelength.shape == spectrum.flux.shape
+
+
 def test_sedpy_shape_mismatch_raises_clear_error(monkeypatch):
     install_fake_sedpy(monkeypatch, magnitudes=[20.0])
 

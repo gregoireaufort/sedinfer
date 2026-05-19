@@ -87,6 +87,21 @@ def test_masked_bands_excluded_from_flux_and_sigma():
     assert bands == ("g",)
 
 
+def test_all_masked_photometry_raises_clear_error():
+    with pytest.raises(ValueError, match="at least one active band"):
+        SEDDataset(
+            ["g", "r"],
+            flux=np.array([1.0, 2.0]),
+            sigma=np.array([0.1, 0.2]),
+            mask=np.array([False, False]),
+        )
+
+
+def test_all_bad_sigma_photometry_raises_clear_error():
+    with pytest.raises(ValueError, match="at least one active band"):
+        SEDDataset(["g", "r"], flux=np.array([1.0, 2.0]), sigma=np.array([0.0, np.nan]))
+
+
 def test_nonfinite_or_bad_sigma_bands_are_masked_automatically():
     data = SEDDataset(
         ["u", "g", "r", "i"],

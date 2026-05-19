@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
 
 import numpy as np
 
@@ -80,6 +81,63 @@ class LogUniformPrior(Prior):
 
     def sample(self, rng: np.random.Generator, size=None):
         return np.exp(rng.uniform(np.log(self.low), np.log(self.high), size=size))
+
+
+@dataclass(frozen=True)
+class IntegerUniformPrior(Prior):
+    """Discrete uniform prior on the inclusive integer interval ``[low, high]``."""
+
+    low: int
+    high: int
+
+    def __post_init__(self) -> None:
+        if not int(self.high) >= int(self.low):
+            raise ValueError("IntegerUniformPrior requires high >= low.")
+        object.__setattr__(self, "low", int(self.low))
+        object.__setattr__(self, "high", int(self.high))
+
+    def logpdf(self, x: float) -> float:
+        if not np.isfinite(x):
+            return -np.inf
+        rounded = int(round(float(x)))
+        if not np.isclose(float(x), rounded, rtol=0.0, atol=1e-12):
+            return -np.inf
+        if rounded < self.low or rounded > self.high:
+            return -np.inf
+        return float(-np.log(self.high - self.low + 1))
+
+    def sample(self, rng: np.random.Generator, size=None):
+        return rng.integers(self.low, self.high + 1, size=size).astype(float)
+
+
+@dataclass(frozen=True)
+class ChoicePrior(Prior):
+    """Discrete uniform prior over a finite set of numeric values."""
+
+    values: Sequence[float]
+    rtol: float = 1e-12
+    atol: float = 1e-12
+
+    def __post_init__(self) -> None:
+        values = np.asarray(self.values, dtype=float)
+        if values.ndim != 1 or values.size == 0:
+            raise ValueError("ChoicePrior requires a non-empty one-dimensional value list.")
+        if not np.all(np.isfinite(values)):
+            raise ValueError("ChoicePrior values must be finite.")
+        if np.unique(values).size != values.size:
+            raise ValueError("ChoicePrior values must be unique.")
+        object.__setattr__(self, "values", tuple(float(v) for v in values))
+
+    def logpdf(self, x: float) -> float:
+        if not np.isfinite(x):
+            return -np.inf
+        values = np.asarray(self.values, dtype=float)
+        match = np.isclose(float(x), values, rtol=self.rtol, atol=self.atol)
+        return float(-np.log(values.size)) if np.any(match) else -np.inf
+
+    def sample(self, rng: np.random.Generator, size=None):
+        values = np.asarray(self.values, dtype=float)
+        return rng.choice(values, size=size)
 
 
 @dataclass(frozen=True)

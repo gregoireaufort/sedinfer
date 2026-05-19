@@ -5,6 +5,12 @@ from pathlib import Path
 import pytest
 
 
+def test_flat_fnu_tophat_sanity_check_is_independent_of_fsps():
+    from examples.validate_fsps_backend import FLAT_FNU_SANITY_RTOL, flat_fnu_tophat_sanity_check
+
+    assert flat_fnu_tophat_sanity_check() <= FLAT_FNU_SANITY_RTOL
+
+
 @pytest.mark.fsps
 def test_validate_fsps_backend_against_direct_calculation():
     for package in ("fsps", "sedpy", "astropy"):

@@ -23,8 +23,44 @@ print(like.log_prob(np.array([0.5])))
 ```
 
 Backends expose `predict_photometry(params, filters) -> ModelPhotometry` and
+may expose `predict_spectrum(params, wavelengths=...) -> ModelSpectrum`. They
 must declare their `MassNormalization`. The likelihood multiplies by
 `10**log10_mass` only for `MassNormalization.PER_SOLAR_MASS`.
+
+## Spectral likelihood
+
+Spectra use observed-frame Angstrom and observed `f_lambda` in
+`erg s^-1 cm^-2 Angstrom^-1`.
+
+```python
+import numpy as np
+
+from sedinfer import GaussianSpectralLikelihood, ParameterSpace, SpectrumDataset
+from sedinfer.backends.mock import MockBackend
+from sedinfer.priors import DeltaPrior
+
+data = SpectrumDataset(
+    wavelength=np.array([5000.0, 5100.0, 5200.0]),
+    flux=np.array([1.0, 1.2, 0.9]),
+    sigma=np.array([0.1, 0.1, 0.1]),
+)
+
+backend = MockBackend(
+    flux=[],
+    spectrum_wavelength=[5000.0, 5100.0, 5200.0],
+    spectrum_flux=[1.0, 1.1, 0.95],
+)
+space = ParameterSpace(names=["z"], priors={"z": DeltaPrior(0.0)})
+like = GaussianSpectralLikelihood(backend, data, space)
+
+print(like.log_prob([0.0]))
+```
+
+`GaussianSpectralLikelihood` requests the model on the active data wavelength
+grid, applies the dataset mask to wavelength/flux/sigma together, and applies
+mass normalization with the same explicit rule as the photometric likelihood.
+Calibration polynomials, covariance matrices, and instrumental convolution are
+not included in this first pass.
 
 ## FSPS backend
 
@@ -56,9 +92,57 @@ phot = backend.predict_photometry(
 print(dict(zip(phot.band_names, phot.flux)))
 ```
 
-The backend returns observed-frame fluxes in maggies. With the default
+The backend returns observed-frame photometry in maggies and observed-frame
+spectra in `f_lambda` cgs per Angstrom. With the default
 `MassNormalization.PER_SOLAR_MASS`, the tabular SFH is normalized to one solar
 mass formed and the likelihood is responsible for applying `10**log10_mass`.
+
+## CIGALE backend
+
+`CIGALEBackend` is optional and requires CIGALE/`pcigale` and its database. It
+uses CIGALE's `SedWarehouse.get_sed` API and returns observed-frame maggies for
+photometry and observed-frame `f_lambda` cgs per Angstrom for spectra. Native
+CIGALE filter names can be passed as strings; sedpy filters are also supported
+via `photometry_mode="sedpy"`.
+
+In `sedinfer`, CIGALE is deliberately treated as a per-solar-mass backend.
+SFH module `normalise=True` is enforced, and the Gaussian likelihood applies
+`10**log10_mass`.
+
+```python
+from sedinfer.backends.cigale import build_cigale_backend_and_parameter_space
+from sedinfer.filters import FilterSet
+from sedinfer.priors import UniformPrior
+
+modules = ["sfhdelayed", "bc03", "redshifting"]
+module_parameters = {
+    "sfhdelayed": {
+        "tau_main": {"range": [500.0, 5000.0]},
+        "age_main": {"values": [1000, 3000, 5000], "dtype": "int"},
+    },
+    "bc03": {
+        "imf": 1,
+        "metallicity": {"values": [0.008, 0.02]},
+    },
+    "redshifting": {
+        "redshift": {"name": "z", "range": [0.0, 2.0]},
+    },
+}
+
+backend, space = build_cigale_backend_and_parameter_space(
+    modules,
+    module_parameters,
+    additional_priors={"log10_mass": UniformPrior(8.0, 12.0)},
+)
+
+filters = FilterSet(["sdss.u", "sdss.g", "sdss.r"])
+phot_per_msun = backend.predict_photometry(
+    {"tau_main": 2000.0, "age_main": 3000, "metallicity": 0.02, "z": 0.5},
+    filters,
+)
+```
+
+See `examples/cigale_photometry_demo.py` and `docs/cigale_backend.md`.
 
 ## Running Real FSPS Validation Locally
 
@@ -139,3 +223,62 @@ flux vector convention consumed by the Gaussian likelihood.
 
 See `notebooks/cosmos2020_sbi_fsps_gpu_timing.ipynb` for a COSMOS2020 +
 FSPS + MAF setup focused on GPU/MPS posterior-sampling timing.
+
+## Experimental JAX-CIGALE
+
+`sedinfer.experimental.jaxcigale` is a JAX-native, CIGALE-inspired prototype.
+It does not call `pcigale`; instead it keeps the CIGALE idea of a fixed ordered
+module chain while making each module a pure JAX operation after setup.
+
+Optional dependencies:
+
+```bash
+pip install "sedinfer[jaxcigale]"
+```
+
+Minimal analytic-stellar demo:
+
+```python
+import numpy as np
+
+from sedinfer.experimental.jaxcigale import (
+    JaxFilterSet,
+    JaxParameterSpace,
+    UniformJaxPrior,
+    analytic_stellar_module,
+    build_jax_sed_model,
+    delayed_sfh_module,
+    no_nebular_module,
+    redshift_module,
+)
+
+wave_rest = np.linspace(900.0, 20000.0, 512)
+age_grid = np.linspace(0.02, 8.0, 64)
+filter_wave = np.linspace(4000.0, 9000.0, 128)
+filters = JaxFilterSet.from_curves(["wide"], [filter_wave], [np.ones_like(filter_wave)])
+
+space = JaxParameterSpace(
+    names=["log10_mass", "z", "tau_gyr", "tage_gyr", "logzsol"],
+    priors={
+        "log10_mass": UniformJaxPrior(8.0, 12.0),
+        "z": UniformJaxPrior(0.0, 3.0),
+        "tau_gyr": UniformJaxPrior(0.2, 8.0),
+        "tage_gyr": UniformJaxPrior(0.2, 10.0),
+        "logzsol": UniformJaxPrior(-1.0, 0.3),
+    },
+)
+
+model = build_jax_sed_model(
+    [delayed_sfh_module(age_grid), analytic_stellar_module(), no_nebular_module(), redshift_module()],
+    wave_rest,
+    filters,
+    space,
+)
+```
+
+For science runs, replace `analytic_stellar_module()` with
+`dsps_stellar_module(ssp_data)`. Nebular emission is currently an explicit graph
+slot: `no_nebular_module()` can be replaced by `nebular_emulator_module(...)`
+once a CLOUDY/Cue-style emulator is validated. See
+`docs/experimental_jaxcigale.md` and
+`examples/experimental_jaxcigale_photometry_demo.py`.

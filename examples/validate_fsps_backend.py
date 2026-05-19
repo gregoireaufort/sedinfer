@@ -1,9 +1,14 @@
-"""Validate FSPSBackend against a direct python-fsps + sedpy calculation.
+"""Validate FSPSBackend against an explicit python-fsps + sedpy calculation.
 
-This script is intended for a local science environment with python-fsps,
-sedpy, astropy, and SPS_HOME configured. It deliberately fails loudly if the
-numerical path produces non-finite fluxes, negative maggies, shape mismatches,
-or disagreement with the independent direct calculation.
+Run this in a local science environment with python-fsps, sedpy, astropy, and
+``SPS_HOME`` configured. The script computes the same simple tabular-SFH galaxy
+two ways:
+
+1. through ``sedinfer.backends.FSPSBackend``;
+2. directly with ``fsps.StellarPopulation`` plus sedpy filter integration.
+
+It fails loudly for non-finite fluxes, negative maggies, shape mismatches, or a
+numerical disagreement larger than the documented tolerances below.
 """
 
 from __future__ import annotations
@@ -23,6 +28,9 @@ from sedinfer.units import LSUN_CGS, MassNormalization, PARSEC_CM
 DEFAULT_FILTER_NAMES = ("sdss_g0", "sdss_r0", "sdss_i0")
 FLUX_RTOL = 1e-10
 MAG_ATOL = 1e-8
+FLAT_FNU_SANITY_RTOL = 5e-5
+C_A_PER_S = 2.99792458e18
+AB_ZERO_FNU_CGS = 3631.0e-23
 
 
 def check_environment() -> None:
@@ -116,6 +124,36 @@ def ab_magnitudes_from_maggies(flux_maggies: np.ndarray) -> np.ndarray:
     return -2.5 * np.log10(flux_maggies)
 
 
+def flat_fnu_tophat_sanity_check() -> float:
+    """Closed-form unit sanity check independent of FSPSBackend and sedpy.
+
+    For a flat AB-zero spectrum, ``f_nu = 3631 Jy``, a top-hat filter must
+    return exactly one maggie.  We evaluate the numerator numerically in
+    ``f_lambda`` and compare it to the analytic integral
+
+    ``integral f_lambda lambda dlambda = f_nu c ln(lambda_2 / lambda_1)``.
+
+    This does not validate FSPS stellar physics, but it catches the common
+    wavelength/f_lambda/f_nu unit mistakes that a backend-vs-direct refactor
+    comparison can accidentally share.
+    """
+
+    lam1_a = 4000.0
+    lam2_a = 5000.0
+    wave_a = np.linspace(lam1_a, lam2_a, 4096)
+    flat_flam = AB_ZERO_FNU_CGS * C_A_PER_S / wave_a**2
+    numerator = np.trapezoid(flat_flam * wave_a, wave_a)
+    analytic_ab_zero = AB_ZERO_FNU_CGS * C_A_PER_S * np.log(lam2_a / lam1_a)
+    maggies = numerator / analytic_ab_zero
+    error = abs(maggies - 1.0)
+    if error > FLAT_FNU_SANITY_RTOL:
+        raise RuntimeError(
+            f"Flat-fnu top-hat sanity check failed: got {maggies:.8f} maggies; "
+            f"expected 1 within {FLAT_FNU_SANITY_RTOL:.1e}."
+        )
+    return float(error)
+
+
 def filter_effective_wavelengths(filters: FilterSet) -> list[float]:
     wavelengths = []
     for filt in filters.filters:
@@ -151,6 +189,7 @@ def validate_outputs(backend_flux: np.ndarray, reference_flux: np.ndarray, n_fil
 
 def run_validation(filter_names: Sequence[str] = DEFAULT_FILTER_NAMES) -> dict[str, object]:
     check_environment()
+    flat_fnu_error = flat_fnu_tophat_sanity_check()
     filters = load_filter_set(filter_names)
     params = default_params()
     backend = FSPSBackend(sp_kwargs=default_sp_kwargs(), mass_normalization=MassNormalization.PER_SOLAR_MASS)
@@ -173,6 +212,7 @@ def run_validation(filter_names: Sequence[str] = DEFAULT_FILTER_NAMES) -> dict[s
         "flam_obs": flam_obs,
         "max_relative_flux_difference": max_rel,
         "max_ab_magnitude_difference": max_mag_diff,
+        "flat_fnu_tophat_sanity_error": flat_fnu_error,
     }
 
 
@@ -186,6 +226,7 @@ def main() -> None:
     print(f"FSPSBackend mass normalization: {backend.mass_normalization.value}")
     print(f"Flux tolerance: relative <= {FLUX_RTOL:.1e}")
     print(f"AB magnitude tolerance: absolute <= {MAG_ATOL:.1e}")
+    print(f"Flat-fnu top-hat sanity error: {result['flat_fnu_tophat_sanity_error']:.3e}")
     print("band wavelength_A backend_maggies backend_ABmag reference_maggies reference_ABmag")
     for band, wave, flux, mag, ref_flux, ref_mag in zip(
         phot.band_names,
